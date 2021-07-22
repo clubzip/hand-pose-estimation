@@ -1,10 +1,26 @@
-import torch.nn as nn
+# Various imports & settings
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
+
+import numpy as np
+import matplotlib.pyplot as plt
+import torchvision
+import tqdm
+import cv2
+from glob import glob
+import pandas
 import time
 
+num_joints = 21
 device = 'cuda:0'
 
+# - For colab
+# from google.colab import drive
+# from google.colab.patches import cv2_imshow
+# drive.mount('/content/gdrive')
 # 2d pose estimator - pretrained
 class CPM2DPose(nn.Module):
     def __init__(self):
@@ -134,32 +150,6 @@ class CPM2DPose(nn.Module):
         x = self.relu(self.conv7_6(x))
         x = self.conv7_7(x)
         return x
-
-
-# In[2]:
-
-
-# Various imports & settings
-import torch
-import numpy as np
-import matplotlib.pyplot as plt
-import torchvision
-import tqdm
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
-import cv2
-
-from glob import glob
-import pandas
-
-device = 'cuda:0'
-num_joints = 21
-
-# - For colab
-# from google.colab import drive
-# from google.colab.patches import cv2_imshow
-# drive.mount('/content/gdrive')
-
 
 class ObmanDataset(Dataset):
     def __init__(self, method=None):

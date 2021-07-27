@@ -244,7 +244,8 @@ class Trainer(object):
 
         if(self.rank == 0):
             test_dataset = ObmanDataset(method='test')
-            self.test_dataloader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False)
+            self.test_dataloader = DataLoader(test_dataset, batch_size=self.batch_size, num_workers=2,
+                                    persistent_workers=True ,pin_memory=True, shuffle=False)
 
     def _build_model(self):
         # 2d pose estimator
@@ -281,7 +282,7 @@ class Trainer(object):
         #-------------------------------------------------------------------------
         return heatmap_gt
 
-    def train(self, epochs, learning_rate, tester=None):
+    def train(self, epochs, learning_rate):
         self.poseNet.train()
         self.min_testset_loss = 1000
         loss_func = torch.nn.MSELoss()
@@ -322,7 +323,8 @@ class Trainer(object):
             losses.append(loss_epoch/batch_num)
             if self.rank == 0:
                 print(' Training Set Loss : ', loss_epoch/batch_num)
-                testset_loss = tester.test_for_train(self.poseNet)
+                testset_loss = self.test_for_train()
+                # testset_loss = Tester.test_for_train(self.poseNet)
                 print(' Test(Validation) Set Loss : ', testset_loss)
                 if(testset_loss < self.min_testset_loss) and epoch >= 50:
                     print('check point : save model')
@@ -336,6 +338,20 @@ class Trainer(object):
             torch.save(self.poseNet.module.state_dict(), 'finetunedweight.pth')
 
         print('Finish training.')
+
+    def test_for_train(self):
+        total_error = 0
+        self.poseNet.eval()
+        for batch_idx, samples in enumerate(self.test_dataloader):
+            x_test, y_test = samples
+            heatmapsPoseNet = self.poseNet.module(x_test.cuda()).cpu().detach().numpy()
+            skeletons_in = Tester.heatmap2skeleton(heatmapsPoseNet)
+            
+            # Accumulate errors for each skeleton data
+            for i in range(skeletons_in.shape[0]):
+              total_error += Tester.calc_error(skeletons_in[i], y_test[i].numpy())
+        self.poseNet.train()
+        return total_error / 500
 
     def exp(self):
         for batch_idx, samples in enumerate(self.dataloader):
@@ -362,6 +378,7 @@ class Tester(object):
         # Load finetunedweight.pth file to model
         # self.poseNet.load_state_dict(torch.load('finetunedweight.pth'))
 
+    @classmethod
     def heatmap2skeleton(self, heatmapsPoseNet):
         skeletons = np.zeros((heatmapsPoseNet.shape[0], heatmapsPoseNet.shape[1], 2))
         for m in range(heatmapsPoseNet.shape[0]):
@@ -371,19 +388,8 @@ class Tester(object):
                 skeletons[m, i, 1] = v * 8
         return skeletons
 
-    def test_for_train(self, poseNet_train):
-        total_error = 0
-        for batch_idx, samples in enumerate(self.dataloader):
-            x_test, y_test = samples
-            heatmapsPoseNet = poseNet_train.module(x_test.cuda()).cpu().detach().numpy()
-            skeletons_in = self.heatmap2skeleton(heatmapsPoseNet)
-            
-            # Accumulate errors for each skeleton data
-            for i in range(skeletons_in.shape[0]):
-              total_error += self.calc_error(skeletons_in[i], y_test[i].numpy())
-        return total_error / 500
-
     # Calculates the error for one predicted skeleton and one ground truth skeleton
+    @classmethod
     def calc_error(self, pred, gt):
         err = 0
 
@@ -396,11 +402,7 @@ class Tester(object):
 
 def main_worker(gpu, epochs, learning_rate, args):
     trainer = Trainer(gpu, args)
-    if(args['rank'] == 0 and gpu == 0):
-        tester = Tester(args['batch_size'])
-        trainer.train(epochs, learning_rate, tester=tester)
-    else:
-        trainer.train(epochs, learning_rate)
+    trainer.train(epochs, learning_rate)
 
 def main():
     num_node = 1 # number of machines

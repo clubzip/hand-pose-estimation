@@ -28,10 +28,10 @@ class CPM2DPose(nn.Module):
     def __init__(self):
         super(CPM2DPose, self).__init__()
 
-        self.scoremap_list = []
-        self.layers_per_block = [2, 2, 4, 2]
-        self.out_chan_list = [64, 128, 256, 512]
-        self.pool_list = [True, True, True, False]
+        # self.scoremap_list = []
+        # self.layers_per_block = [2, 2, 4, 2]
+        # self.out_chan_list = [64, 128, 256, 512]
+        # self.pool_list = [True, True, True, False]
 
         # MODEL 4 & 5
 
@@ -90,22 +90,23 @@ class CPM2DPose(nn.Module):
         self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
         self.dropout = nn.Dropout2d(p=0.1)
 
-    def _make_layer(self, block, planes, blocks, stride=1):
-        downsample = None
-        if stride != 1 or self.inplanes != planes * block.expansion:
-            downsample = nn.Sequential(
-                nn.Conv2d(self.inplanes, planes * block.expansion,
-                          kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(planes * block.expansion),
-            )
+    # def _make_layer(self, block, planes, blocks, stride=1):
+    #     downsample = None
+    #     if stride != 1 or self.inplanes != planes * block.expansion:
+    #         downsample = nn.Sequential(
+    #             nn.Conv2d(self.inplanes, planes * block.expansion,
+    #                       kernel_size=1, stride=stride, bias=False),
+    #             nn.BatchNorm2d(planes * block.expansion),
+    #         )
 
-        layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample))
-        self.inplanes = planes * block.expansion
-        for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes))
+    #     layers = []
+    #     layers.append(block(self.inplanes, planes, stride, downsample))
+    #     self.inplanes = planes * block.expansion
+    #     for i in range(1, blocks):
+    #         layers.append(block(self.inplanes, planes))
 
-        return nn.Sequential(*layers)
+    #     return nn.Sequential(*layers)
+    
 
     @torch.cuda.amp.autocast()
     def forward(self, x):
@@ -272,6 +273,7 @@ class Trainer(object):
         self.batch_size =int(self.batch_size / self.ngpus_per_node)
         
         self.poseNet = DDP(self.poseNet, device_ids=[self.gpu])
+        
         #---------------------------------------------------------------
         self.transform = torch.nn.Sequential(torchvision.transforms.GaussianBlur(kernel_size=3,sigma=(2.0,2.0)))
         self.transform = torch.jit.script(self.transform)
@@ -279,7 +281,6 @@ class Trainer(object):
         print('Finish build model.')
 
     def skeleton2heatmap(self, num_data, keypoint_targets):
-        # heatmap_gt = torch.zeros_like(_heatmap, device=_heatmap.device)
         heatmap_gt = torch.zeros((num_data, 21, 32, 32), device=self.gpu)
 
         keypoint_targets = (((keypoint_targets)) // 8)
@@ -289,7 +290,6 @@ class Trainer(object):
                 y = int(keypoint_targets[i, j, 1])
                 heatmap_gt[i, j, x, y] = 1
 
-        start = time.time()
         heatmap_gt = heatmap_gt.detach()
         for i in range(keypoint_targets.shape[0]):
             heatmap_gt[i] = self.transform(heatmap_gt[i]) * 9 / 1.1772
@@ -299,8 +299,6 @@ class Trainer(object):
         #     for j in range(21):
         #         heatmap_gt[i, j, :, :] = cv2.GaussianBlur(heatmap_gt[i, j, :, :], ksize=(3, 3), sigmaX=2, sigmaY=2) * 9 / 1.1772
         # heatmap_gt = torch.FloatTensor(heatmap_gt).to(self.gpu)
-        
-        print("skeleton2heatmap time: ", time.time()-start)
         return heatmap_gt
 
     def train(self, epochs, learning_rate):
@@ -324,6 +322,7 @@ class Trainer(object):
             for batch_idx, (x_train, y_train) in enumerate(self.dataloader):
                 x_train = x_train.cuda(self.gpu, non_blocking=True)
                 y_train = y_train.cuda(self.gpu, non_blocking=True)
+                
                 gt_heatmap = self.skeleton2heatmap(x_train.shape[0], y_train)
                 #-------------------------------AMP
                 with torch.cuda.amp.autocast():
@@ -345,7 +344,6 @@ class Trainer(object):
             if self.rank == 0:
                 print(' Training Set Loss : ', loss_epoch/batch_num)
                 testset_loss = self.test_for_train()
-                # testset_loss = Tester.test_for_train(self.poseNet)
                 print(' Test(Validation) Set Loss : ', testset_loss)
                 if(testset_loss < self.min_testset_loss) and epoch >= 50:
                     print('check point : save model')
@@ -363,28 +361,49 @@ class Trainer(object):
     def test_for_train(self):
         total_error = 0
         self.poseNet.eval()
+        
+        # #------------------------ JIT script
+        # # traced_poseNet = torch.jit.trace(self.poseNet.module, torch.zeros(1,3,256,256,device=self.gpu))
+        # scripted_poseNet = torch.jit.script(self.poseNet.module)
+        # # print(traced_poseNet.code)
+        # for batch_idx, samples in enumerate(self.test_dataloader):
+        #     x_test, y_test = samples
+        #     temp = scripted_poseNet(x_test.cuda())
+        #     heatmapsPoseNet = temp.cpu().detach().numpy()
+        #     skeletons_in = Tester.heatmap2skeleton(heatmapsPoseNet)
+            
+        #     # Accumulate errors for each skeleton data
+        #     for i in range(skeletons_in.shape[0]):
+        #       total_error += Tester.calc_error(skeletons_in[i], y_test[i].numpy())
+        # #------------------------
+
         for batch_idx, samples in enumerate(self.test_dataloader):
             x_test, y_test = samples
-            heatmapsPoseNet = self.poseNet.module(x_test.cuda()).cpu().detach().numpy()
+            temp = self.poseNet.module(x_test.cuda())
+            heatmapsPoseNet = temp.cpu().detach().numpy()
+            
             skeletons_in = Tester.heatmap2skeleton(heatmapsPoseNet)
             
             # Accumulate errors for each skeleton data
             for i in range(skeletons_in.shape[0]):
               total_error += Tester.calc_error(skeletons_in[i], y_test[i].numpy())
+
+        
+
         self.poseNet.train()
         return total_error / 500
 
-    def exp(self):
-        for batch_idx, samples in enumerate(self.dataloader):
-            x_train, y_train = samples
-            heatmapsPoseNet = self.poseNet(x_train.cuda())
-            gt_heatmap = self.skeleton2heatmap(heatmapsPoseNet, y_train)
+    # def exp(self):
+    #     for batch_idx, samples in enumerate(self.dataloader):
+    #         x_train, y_train = samples
+    #         heatmapsPoseNet = self.poseNet(x_train.cuda())
+    #         gt_heatmap = self.skeleton2heatmap(heatmapsPoseNet, y_train)
 
-            print(heatmapsPoseNet.shape)
-            print(gt_heatmap.shape)
+    #         print(heatmapsPoseNet.shape)
+    #         print(gt_heatmap.shape)
 
-            if batch_idx == 0:
-              break
+    #         if batch_idx == 0:
+    #           break
 
 class Tester(object):
     def __init__(self, batch_size):

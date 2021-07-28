@@ -266,10 +266,12 @@ class Trainer(object):
     def _build_model(self):
         # 2d pose estimator
         poseNet = CPM2DPose()
-        # poseNet.load_state_dict(torch.load('finetunedweight_90.pth'))
+        poseNet.load_state_dict(torch.load('finetunedweight_new.pth'))
+
         #---------------------------------------------------------------
         torch.cuda.set_device(self.gpu)
         self.poseNet = poseNet.cuda(self.gpu)
+        
         self.batch_size =int(self.batch_size / self.ngpus_per_node)
         
         self.poseNet = DDP(self.poseNet, device_ids=[self.gpu])
@@ -363,13 +365,12 @@ class Trainer(object):
         self.poseNet.eval()
         
         # #------------------------ JIT script
-        # # traced_poseNet = torch.jit.trace(self.poseNet.module, torch.zeros(1,3,256,256,device=self.gpu))
         # scripted_poseNet = torch.jit.script(self.poseNet.module)
         # # print(traced_poseNet.code)
         # for batch_idx, samples in enumerate(self.test_dataloader):
         #     x_test, y_test = samples
-        #     temp = scripted_poseNet(x_test.cuda())
-        #     heatmapsPoseNet = temp.cpu().detach().numpy()
+        #     with torch.cuda.amp.autocast():
+        #        heatmapsPoseNet = scripted_poseNet(x_test.cuda()).cpu().detach().numpy()
         #     skeletons_in = Tester.heatmap2skeleton(heatmapsPoseNet)
             
         #     # Accumulate errors for each skeleton data
@@ -379,16 +380,13 @@ class Trainer(object):
 
         for batch_idx, samples in enumerate(self.test_dataloader):
             x_test, y_test = samples
-            temp = self.poseNet.module(x_test.cuda())
-            heatmapsPoseNet = temp.cpu().detach().numpy()
-            
+            with torch.cuda.amp.autocast():
+                heatmapsPoseNet = self.poseNet.module(x_test.cuda()).cpu().detach().numpy()
             skeletons_in = Tester.heatmap2skeleton(heatmapsPoseNet)
             
             # Accumulate errors for each skeleton data
             for i in range(skeletons_in.shape[0]):
               total_error += Tester.calc_error(skeletons_in[i], y_test[i].numpy())
-
-        
 
         self.poseNet.train()
         return total_error / 500
@@ -408,15 +406,46 @@ class Trainer(object):
 class Tester(object):
     def __init__(self, batch_size):
         self.batch_size = batch_size
-        dataset = ObmanDataset(method='test')
+        self._build_model()
+
+        # dataset = ObmanDataset(method='test')
+        dataset = ObmanDataset(method='train')
         self.root = dataset.root
-        self.dataloader = DataLoader(dataset, num_workers=1, persistent_workers=True,
+        self.dataloader = DataLoader(dataset, num_workers=2, persistent_workers=True,
                                         batch_size=self.batch_size, shuffle=False)
         self.datalen = dataset.__len__()
         self.mse_all_img = []
 
         # Load finetunedweight.pth file to model
         # self.poseNet.load_state_dict(torch.load('finetunedweight.pth'))
+    
+    def _build_model(self):
+        # 2d pose estimator
+        self.poseNet = CPM2DPose()
+        self.poseNet.load_state_dict(torch.load('finetunedweight_new.pth'))
+        self.poseNet = self.poseNet.to('cuda:0')
+        self.poseNet.eval()
+        self.poseNet = torch.jit.script(self.poseNet)
+
+        print('Finish build model.')
+
+    def test(self):
+        total_error = 0
+        count = 0
+        for batch_idx, samples in enumerate(self.dataloader):
+            x_test, y_test = samples
+            
+            with torch.cuda.amp.autocast():
+                heatmapsPoseNet = self.poseNet(x_test.cuda()).cpu().detach().numpy()
+
+            skeletons_in = self.heatmap2skeleton(heatmapsPoseNet)
+            
+            # Accumulate errors for each skeleton data
+            for i in range(skeletons_in.shape[0]):
+              count +=1
+              total_error += self.calc_error(skeletons_in[i], y_test[i].numpy())
+
+        print("Average Error : ", total_error / count)
 
     @classmethod
     def heatmap2skeleton(self, heatmapsPoseNet):
@@ -443,11 +472,13 @@ class Tester(object):
 def main_worker(gpu, epochs, learning_rate, args):
     trainer = Trainer(gpu, args)
     trainer.train(epochs, learning_rate)
+    # tester = Tester(args['batch_size'])
+    # tester.test()
 
 def main():
     num_node = 1 # number of machines
-    # ngpus_per_node = 1
-    ngpus_per_node = torch.cuda.device_count()
+    ngpus_per_node = 1
+    # ngpus_per_node = torch.cuda.device_count()
     rank = 0
     world_size = ngpus_per_node * num_node
     

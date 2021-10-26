@@ -1,4 +1,4 @@
-# Hand-pose-estimation
+# CPM2DPose: Hand pose estimation network
 ![Hand-pose-estimation](https://user-images.githubusercontent.com/52950649/138914461-3fc0fd26-c126-4d5c-9a96-dbcde704c229.png)
 
 
